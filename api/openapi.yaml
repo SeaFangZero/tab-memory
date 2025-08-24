@@ -1,0 +1,707 @@
+openapi: 3.0.3
+info:
+  title: Tab Memory API
+  description: |
+    REST API for Tab Memory Chrome Extension - manage browsing sessions, tab events, and user data.
+    
+    ## Authentication
+    All endpoints except `/auth/*` require a Bearer token in the Authorization header.
+    
+    ## Rate Limiting
+    - 100 requests per 15-minute window per IP
+    - Authenticated requests have higher limits
+    
+    ## Data Flow
+    1. Register/login to get access token
+    2. Extension sends tab events to `/events/batch`
+    3. API processes events and creates sessions
+    4. Use `/sessions` endpoints to retrieve and restore sessions
+  version: 1.0.0
+  contact:
+    name: Tab Memory API
+    url: https://github.com/your-org/tab-memory
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Development server
+  - url: https://tab-memory-api.onrender.com
+    description: Production server
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token obtained from `/auth/login` or `/auth/register`
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique user identifier
+        email:
+          type: string
+          format: email
+          description: User email address
+        created_at:
+          type: string
+          format: date-time
+          description: Account creation timestamp
+      required:
+        - id
+        - email
+        - created_at
+
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique session identifier
+        user_id:
+          type: string
+          format: uuid
+          description: Owner user ID
+        title:
+          type: string
+          maxLength: 500
+          description: Session title (auto-generated or user-defined)
+        summary:
+          type: string
+          nullable: true
+          description: AI-generated session summary (Phase 3+)
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Confidence score for session clustering
+        started_at:
+          type: string
+          format: date-time
+          description: When the session began
+        last_active_at:
+          type: string
+          format: date-time
+          description: Last activity in this session
+        screenshot_url:
+          type: string
+          format: uri
+          nullable: true
+          description: Optional session screenshot URL
+        mode:
+          type: string
+          enum: [strict, loose]
+          description: Session clustering mode
+      required:
+        - id
+        - user_id
+        - title
+        - confidence
+        - started_at
+        - last_active_at
+        - mode
+
+    Tab:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique tab identifier
+        session_id:
+          type: string
+          format: uuid
+          description: Parent session ID
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Tab URL (may be redacted for privacy)
+        title:
+          type: string
+          maxLength: 1000
+          description: Tab title
+        pinned:
+          type: boolean
+          description: Whether tab was pinned
+        order_index:
+          type: integer
+          description: Tab order within session
+        first_seen_at:
+          type: string
+          format: date-time
+          description: When tab was first observed
+        last_seen_at:
+          type: string
+          format: date-time
+          description: When tab was last active
+      required:
+        - id
+        - session_id
+        - url
+        - title
+        - pinned
+        - order_index
+        - first_seen_at
+        - last_seen_at
+
+    Event:
+      type: object
+      properties:
+        window_id:
+          type: integer
+          description: Browser window ID
+        tab_id:
+          type: integer
+          description: Browser tab ID
+        type:
+          type: string
+          enum: [open, update, activate, close]
+          description: Type of tab event
+        title:
+          type: string
+          maxLength: 1000
+          description: Tab title at time of event
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Tab URL (privacy-filtered)
+        ts:
+          type: string
+          format: date-time
+          description: Event timestamp
+      required:
+        - window_id
+        - tab_id
+        - type
+        - title
+        - url
+        - ts
+
+    AuthResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: JWT access token
+        refresh_token:
+          type: string
+          description: JWT refresh token
+        expires_in:
+          type: integer
+          description: Token expiry time in seconds
+        user:
+          $ref: '#/components/schemas/User'
+      required:
+        - access_token
+        - refresh_token
+        - expires_in
+        - user
+
+    ApiResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the request succeeded
+        data:
+          type: object
+          description: Response data (varies by endpoint)
+        error:
+          type: string
+          description: Error message if success is false
+        message:
+          type: string
+          description: Additional information
+      required:
+        - success
+
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Human-readable error message
+        stack:
+          type: string
+          description: Stack trace (development only)
+      required:
+        - success
+        - error
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Check if the API is running
+      security: []
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    format: date-time
+                  version:
+                    type: string
+                    example: 1.0.0
+
+  /auth/register:
+    post:
+      summary: Register new user
+      description: Create a new user account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 128
+              required:
+                - email
+                - password
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AuthResponse'
+        '409':
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login:
+    post:
+      summary: User login
+      description: Authenticate user and return access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+              required:
+                - email
+                - password
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/refresh:
+    post:
+      summary: Refresh access token
+      description: Get new access token using refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token:
+                  type: string
+              required:
+                - refresh_token
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          access_token:
+                            type: string
+                          expires_in:
+                            type: integer
+
+  /events/batch:
+    post:
+      summary: Ingest tab events (batch)
+      description: |
+        Primary endpoint for extension to send tab events. 
+        Accepts up to 100 events per request.
+        **Maps to required `/ingest/event` endpoint.**
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                events:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Event'
+                  minItems: 1
+                  maxItems: 100
+              required:
+                - events
+      responses:
+        '202':
+          description: Events accepted for processing
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          synced_count:
+                            type: integer
+                            description: Number of events processed
+        '400':
+          description: Invalid event data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sessions:
+    get:
+      summary: Get user sessions
+      description: Retrieve paginated list of user's sessions
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of sessions to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          description: Number of sessions to skip
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: mode
+          in: query
+          description: Filter by session mode
+          schema:
+            type: string
+            enum: [strict, loose]
+      responses:
+        '200':
+          description: Sessions retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sessions:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Session'
+                          total:
+                            type: integer
+                          limit:
+                            type: integer
+                          offset:
+                            type: integer
+
+    post:
+      summary: Create session
+      description: Create empty or draft session (Phase 3+ feature)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  maxLength: 500
+                mode:
+                  type: string
+                  enum: [strict, loose]
+                  default: loose
+              required:
+                - title
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Session'
+
+  /sessions/{id}:
+    get:
+      summary: Get session details
+      description: Retrieve specific session with metadata
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Session UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Session found
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Session'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sessions/{id}/tabs:
+    get:
+      summary: Get session tabs
+      description: Retrieve all tabs for a specific session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Session UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Tabs retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tabs:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Tab'
+                          session_id:
+                            type: string
+                            format: uuid
+                          total:
+                            type: integer
+
+  /sessions/restore:
+    post:
+      summary: Restore session
+      description: |
+        Restore a session by returning ordered tab list with pinned/order flags.
+        Extension will open these tabs in the browser.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionId:
+                  type: string
+                  format: uuid
+              required:
+                - sessionId
+      responses:
+        '200':
+          description: Session restore data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          session:
+                            type: object
+                            properties:
+                              id:
+                                type: string
+                                format: uuid
+                              title:
+                                type: string
+                              tab_count:
+                                type: integer
+                          message:
+                            type: string
+                            example: Session restore initiated
+
+  /users/profile:
+    get:
+      summary: Get user profile
+      description: Retrieve current user's profile information
+      responses:
+        '200':
+          description: Profile retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/User'
+
+  /users/stats:
+    get:
+      summary: Get user statistics
+      description: Retrieve user's usage statistics and metrics
+      responses:
+        '200':
+          description: Statistics retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user:
+                            type: object
+                            properties:
+                              email:
+                                type: string
+                              created_at:
+                                type: string
+                                format: date-time
+                              account_age_days:
+                                type: integer
+                          sessions:
+                            type: object
+                            properties:
+                              total:
+                                type: integer
+                              last_30_days:
+                                type: integer
+                              avg_confidence:
+                                type: number
+                          events:
+                            type: object
+                            properties:
+                              total:
+                                type: integer
+                              last_7_days:
+                                type: integer
+                              unique_windows:
+                                type: integer
+
+tags:
+  - name: Authentication
+    description: User authentication and authorization
+  - name: Events
+    description: Tab event ingestion and processing
+  - name: Sessions
+    description: Browse session management
+  - name: Users
+    description: User profile and statistics

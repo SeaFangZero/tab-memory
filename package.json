@@ -1,0 +1,22 @@
+{
+  "name": "tab-memory",
+  "version": "1.0.0",
+  "description": "Production-grade Chrome extension for tab session management and restoration",
+  "private": true,
+
+  "scripts": {
+    "install:all": "npm install && cd shared && npm install && cd ../api && npm install && cd ../extension && npm install",
+    "build:all": "cd shared && npm run build && cd ../api && npm run build && cd ../extension && npm run build",
+    "setup": "npm run install:all && npm run build:all",
+    "start:api": "cd api && npm run dev",
+    "start:extension": "cd extension && npm run dev",
+    "migrate": "cd api && npm run migrate"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
+  }
+}
